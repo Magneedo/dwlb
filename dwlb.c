@@ -1897,7 +1897,6 @@ main(int argc, char **argv)
 
 	/* Load selected font */
 	fcft_init(FCFT_LOG_COLORIZE_AUTO, 0, FCFT_LOG_CLASS_ERROR);
-	fcft_set_scaling_filter(FCFT_SCALING_FILTER_LANCZOS3);
 
 	unsigned int dpi = 96 * buffer_scale;
 	char buf[10];

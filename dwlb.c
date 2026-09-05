@@ -185,6 +185,7 @@ static char sockbuf[4096];
 
 static char *stdinbuf;
 static size_t stdinbuf_cap;
+static size_t stdinbuf_len;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -266,15 +267,11 @@ draw_text(char *text,
 	bool draw_fg = foreground && fg_color;
 	bool draw_bg = background && bg_color;
 	
-	pixman_image_t *fg_mask_fill;
-	pixman_color_t *cur_fg_color;
-	pixman_color_t *cur_bg_color;
-	if (draw_fg) {
-		cur_fg_color = fg_color;
+	pixman_image_t *fg_mask_fill = NULL;
+	pixman_color_t *cur_fg_color = fg_color;
+	pixman_color_t *cur_bg_color = bg_color;
+	if (draw_fg)
 		fg_mask_fill= pixman_image_create_solid_fill(&(pixman_color_t){0xFFFF,0xFFFF,0xFFFF,0xFFFF});
-	}
-	if (draw_bg)
-		cur_bg_color = bg_color;
 
 	uint32_t color_ind = 0, codepoint, state = UTF8_ACCEPT, last_cp = 0;
 	for (char *p = text; *p; p++) {
@@ -391,7 +388,7 @@ draw_frame(Bar *bar)
 	
 	/* Text background and foreground layers */
 	pixman_image_t *foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, bar->width, bar->height, NULL, bar->width * 4);
-	pixman_image_t *foreground_mask = pixman_image_create_bits(PIXMAN_a8, bar->width, bar->height, NULL, bar->width * 4);
+	pixman_image_t *foreground_mask = pixman_image_create_bits(PIXMAN_a8, bar->width, bar->height, NULL, 0);
 	pixman_image_t *background = pixman_image_create_bits(PIXMAN_a8r8g8b8, bar->width, bar->height, NULL, bar->width * 4);
 	
 	/* Draw on images */
@@ -666,8 +663,8 @@ pointer_frame(void *data, struct wl_pointer *pointer)
 	if (!seat->pointer_button || !seat->bar)
 		return;
 
-	uint32_t x = 0, i = 0;
-	do {
+	uint32_t x = 0, i;
+	for (i = 0; i < tags_l; i++) {
 		if (hide_vacant) {
 			const bool active = seat->bar->mtags & 1 << i;
 			const bool occupied = seat->bar->ctags & 1 << i;
@@ -676,7 +673,9 @@ pointer_frame(void *data, struct wl_pointer *pointer)
 				continue;
 		}
 		x += TEXT_WIDTH(tags[i], seat->bar->width - x, seat->bar->textpadding) / buffer_scale;
-	} while (seat->pointer_x >= x && ++i < tags_l);
+		if (seat->pointer_x < x)
+			break;
+	}
 
 	if (i < tags_l) {
 		/* Clicked on tags */
@@ -961,11 +960,10 @@ dwl_wm_output_layout_symbol(void *data, struct zdwl_ipc_output_v2 *dwl_wm_output
 {
 	Bar *bar = (Bar *)data;
 
-	if (layouts[bar->layout_idx])
-		free(layouts[bar->layout_idx]);
-	if (!(layouts[bar->layout_idx] = strdup(layout)))
+	/* Symbols are output-specific and may differ for the same layout. */
+	free(bar->layout);
+	if (!(bar->layout = strdup(layout)))
 		EDIE("strdup");
-	bar->layout = layouts[bar->layout_idx];
 }
 
 static void
@@ -1074,7 +1072,7 @@ teardown_bar(Bar *bar)
 		free(bar->title.buttons);
 	if (bar->window_title)
 		free(bar->window_title);
-	if (!ipc && bar->layout)
+	if (bar->layout)
 		free(bar->layout);
 	if (ipc)
 		zdwl_ipc_output_v2_destroy(bar->dwl_wm_output);
@@ -1145,17 +1143,21 @@ advance_word(char **beg, char **end)
 static void
 read_stdin(void)
 {
-	size_t len = 0;
+	size_t len = stdinbuf_len;
 	for (;;) {
 		ssize_t rv = read(STDIN_FILENO, stdinbuf + len, stdinbuf_cap - len);
 		if (rv == -1) {
+			if (errno == EINTR)
+				continue;
 			if (errno == EWOULDBLOCK)
 				break;
 			EDIE("read");
 		}
 		if (rv == 0) {
 			run_display = false;
-			return;
+			if (len && stdinbuf[len - 1] != '\n')
+				stdinbuf[len++] = '\n';
+			break;
 		}
 
 		if ((len += rv) > stdinbuf_cap / 2)
@@ -1227,6 +1229,9 @@ read_stdin(void)
 			}
 		}
 	}
+	/* A pipe read can end in the middle of an update. Keep it for next time. */
+	stdinbuf_len = stdinbuf + len - linebeg;
+	memmove(stdinbuf, linebeg, stdinbuf_len);
 }
 
 static void
@@ -1296,15 +1301,18 @@ parse_into_customtext(CustomText *ct, char *text)
 		uint32_t x = 0;
 		size_t str_pos = 0;
 
-		Button *left_button = NULL;
-		Button *middle_button = NULL;
-		Button *right_button = NULL;
-		Button *scrollup_button = NULL;
-		Button *scrolldown_button = NULL;
+		/* Keep indices because appending a button can reallocate the array. */
+		uint32_t left_button = UINT32_MAX;
+		uint32_t middle_button = UINT32_MAX;
+		uint32_t right_button = UINT32_MAX;
+		uint32_t scrollup_button = UINT32_MAX;
+		uint32_t scrolldown_button = UINT32_MAX;
 	
 		for (char *p = text; *p && str_pos < sizeof(ct->text) - 1; p++) {
 			if (state == UTF8_ACCEPT && *p == '^') {
 				p++;
+				if (!*p)
+					break;
 				if (*p != '^') {
 					char *arg, *end;
 					if (!(arg = strchr(p, '(')) || !(end = strchr(arg + 1, ')')))
@@ -1315,70 +1323,78 @@ parse_into_customtext(CustomText *ct, char *text)
 					if (!strcmp(p, "bg")) {
 						Color *color;
 						ARRAY_APPEND(ct->colors, ct->colors_l, ct->colors_c, color);
-						if (!*arg)
-							color->color = inactive_bg_color;
-						else
+						color->color = inactive_bg_color;
+						if (*arg)
 							parse_color(arg, &color->color);
 						color->bg = true;
 						color->start = ct->text + str_pos;
 					} else if (!strcmp(p, "fg")) {
 						Color *color;
 						ARRAY_APPEND(ct->colors, ct->colors_l, ct->colors_c, color);
-						if (!*arg)
-							color->color = inactive_fg_color;
-						else
+						color->color = inactive_fg_color;
+						if (*arg)
 							parse_color(arg, &color->color);
 						color->bg = false;
 						color->start = ct->text + str_pos;
 					} else if (!strcmp(p, "lm")) {
-						if (left_button) {
-							left_button->x2 = x;
-							left_button = NULL;
+						if (left_button != UINT32_MAX) {
+							ct->buttons[left_button].x2 = x;
+							left_button = UINT32_MAX;
 						} else if (*arg) {
-							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, left_button);
-							left_button->btn = BTN_LEFT;
-							snprintf(left_button->command, sizeof left_button->command, "%s", arg);
-							left_button->x1 = x;
+							Button *button;
+							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, button);
+							left_button = ct->buttons_l - 1;
+							button->btn = BTN_LEFT;
+							snprintf(button->command, sizeof button->command, "%s", arg);
+							button->x1 = x;
 						}
 					} else if (!strcmp(p, "mm")) {
-						if (middle_button) {
-							middle_button->x2 = x;
-							middle_button = NULL;
+						if (middle_button != UINT32_MAX) {
+							ct->buttons[middle_button].x2 = x;
+							middle_button = UINT32_MAX;
 						} else if (*arg) {
-							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, middle_button);
-							middle_button->btn = BTN_MIDDLE;
-							snprintf(middle_button->command, sizeof middle_button->command, "%s", arg);
-							middle_button->x1 = x;
+							Button *button;
+							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, button);
+							middle_button = ct->buttons_l - 1;
+							button->btn = BTN_MIDDLE;
+							snprintf(button->command, sizeof button->command, "%s", arg);
+							button->x1 = x;
 						}
 					} else if (!strcmp(p, "rm")) {
-						if (right_button) {
-							right_button->x2 = x;
-							right_button = NULL;
+						if (right_button != UINT32_MAX) {
+							ct->buttons[right_button].x2 = x;
+							right_button = UINT32_MAX;
 						} else if (*arg) {
-							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, right_button);
-							right_button->btn = BTN_RIGHT;
-							snprintf(right_button->command, sizeof right_button->command, "%s", arg);
-							right_button->x1 = x;
+							Button *button;
+							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, button);
+							right_button = ct->buttons_l - 1;
+							button->btn = BTN_RIGHT;
+							snprintf(button->command, sizeof button->command, "%s", arg);
+							button->x1 = x;
 						}
 					} else if (!strcmp(p, "us")) {
-						if (scrollup_button) {
-							scrollup_button->x2 = x;
-							scrollup_button = NULL;
+						if (scrollup_button != UINT32_MAX) {
+							ct->buttons[scrollup_button].x2 = x;
+							scrollup_button = UINT32_MAX;
 						} else if (*arg) {
-							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, scrollup_button);
-							scrollup_button->btn = WheelUp;
-							snprintf(scrollup_button->command, sizeof scrollup_button->command, "%s", arg);
-							scrollup_button->x1 = x;
+							Button *button;
+							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, button);
+							scrollup_button = ct->buttons_l - 1;
+							button->btn = WheelUp;
+							snprintf(button->command, sizeof button->command, "%s", arg);
+							button->x1 = x;
 						}
 					} else if (!strcmp(p, "ds")) {
-						if (scrolldown_button) {
-							scrolldown_button->x2 = x;
-							scrolldown_button = NULL;
+						if (scrolldown_button != UINT32_MAX) {
+							ct->buttons[scrolldown_button].x2 = x;
+							scrolldown_button = UINT32_MAX;
 						} else if (*arg) {
-							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, scrolldown_button);
-							scrolldown_button->btn = WheelDown;
-							snprintf(scrolldown_button->command, sizeof scrolldown_button->command, "%s", arg);
-							scrolldown_button->x1 = x;
+							Button *button;
+							ARRAY_APPEND(ct->buttons, ct->buttons_l, ct->buttons_c, button);
+							scrolldown_button = ct->buttons_l - 1;
+							button->btn = WheelDown;
+							snprintf(button->command, sizeof button->command, "%s", arg);
+							button->x1 = x;
 						}
 					} 
 
@@ -1407,16 +1423,16 @@ parse_into_customtext(CustomText *ct, char *text)
 			x += kern + glyph->advance.x;
 		}
 
-		if (left_button)
-			left_button->x2 = x;
-		if (middle_button)
-			middle_button->x2 = x;
-		if (right_button)
-			right_button->x2 = x;
-		if (scrollup_button)
-			scrollup_button->x2 = x;
-		if (scrolldown_button)
-			scrolldown_button->x2 = x;
+		if (left_button != UINT32_MAX)
+			ct->buttons[left_button].x2 = x;
+		if (middle_button != UINT32_MAX)
+			ct->buttons[middle_button].x2 = x;
+		if (right_button != UINT32_MAX)
+			ct->buttons[right_button].x2 = x;
+		if (scrollup_button != UINT32_MAX)
+			ct->buttons[scrollup_button].x2 = x;
+		if (scrolldown_button != UINT32_MAX)
+			ct->buttons[scrolldown_button].x2 = x;
 	
 		
 		ct->text[str_pos] = '\0';
@@ -1487,10 +1503,10 @@ read_socket(void)
 	if (!all && !bar)
 		return;
 	
-	ADVANCE();
+	bool has_data = ADVANCE() == 0;
 
 	if (!strcmp(wordbeg, "status")) {
-		if (!*wordend)
+		if (!has_data)
 			return;
 		if (all) {
 			Bar *first = NULL;
@@ -1508,7 +1524,7 @@ read_socket(void)
 			bar->redraw = true;
 		}
 	} else if (!strcmp(wordbeg, "title")) {
-		if (!custom_title || !*wordend)
+		if (!custom_title || !has_data)
 			return;
 		if (all) {
 			Bar *first = NULL;
@@ -1649,23 +1665,28 @@ client_send_command(struct sockaddr_un *sock_address, const char *output,
 	size_t len = strlen(sockbuf);
 			
 	struct dirent *de;
-	bool newfd = true;
-
 	/* Send data to all dwlb instances */
 	while ((de = readdir(dir))) {
 		if (!strncmp(de->d_name, "dwlb-", 5)) {
-			if (!target_socket || !strncmp(de -> d_name, target_socket, 6)){
-				if (newfd && (sock_fd = socket(AF_UNIX, SOCK_STREAM, 1)) == -1)
+			if (!target_socket || !strcmp(de->d_name, target_socket)) {
+				if ((sock_fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 					EDIE("socket");
 				snprintf(sock_address->sun_path, sizeof sock_address->sun_path, "%s/%s", socketdir, de->d_name);
 				if (connect(sock_fd, (struct sockaddr *) sock_address, sizeof(*sock_address)) == -1) {
-					newfd = false;
+					close(sock_fd);
 					continue;
 				}
-				if (send(sock_fd, sockbuf, len, 0) == -1)
-					fprintf(stderr, "Could not send status data to '%s'\n", sock_address->sun_path);
+				for (size_t sent = 0; sent < len;) {
+					ssize_t written = send(sock_fd, sockbuf + sent, len - sent, MSG_NOSIGNAL);
+					if (written == -1 && errno == EINTR)
+						continue;
+					if (written <= 0) {
+						fprintf(stderr, "Could not send status data to '%s'\n", sock_address->sun_path);
+						break;
+					}
+					sent += written;
+				}
 				close(sock_fd);
-				newfd = true;
 			}
 		}
 	}
@@ -1716,9 +1737,12 @@ main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "-status-stdin")) {
 			if (++i >= argc)
 				DIE("Option -status-stdin requires an argument");
-			char *status = malloc(TEXT_MAX * sizeof(char));
-			while (fgets(status, TEXT_MAX-1, stdin)) {
-				status[strlen(status)-1] = '\0';
+			char *status = NULL;
+			size_t capacity = 0;
+			ssize_t length;
+			while ((length = getline(&status, &capacity, stdin)) != -1) {
+				if (length && status[length - 1] == '\n')
+					status[length - 1] = '\0';
 				client_send_command(&sock_address, argv[i], "status", status, target_socket);
 			}
 			free(status);
@@ -1869,7 +1893,13 @@ main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "-scale")) {
 			if (++i >= argc)
 				DIE("Option -scale requires an argument");
-			buffer_scale = strtoul(argv[i], &argv[i] + strlen(argv[i]), 10);
+			char *end;
+			errno = 0;
+			unsigned long scale = strtoul(argv[i], &end, 10);
+			if (!isdigit((unsigned char)argv[i][0]) || *end || errno == ERANGE ||
+			    scale == 0 || scale > UINT32_MAX / 96)
+				DIE("Option -scale requires a positive integer in range 1..%u", UINT32_MAX / 96);
+			buffer_scale = scale;
 		} else if (!strcmp(argv[i], "-v")) {
 			fprintf(stderr, PROGRAM " " VERSION "\n");
 			return 0;
@@ -1899,7 +1929,7 @@ main(int argc, char **argv)
 	fcft_init(FCFT_LOG_COLORIZE_AUTO, 0, FCFT_LOG_CLASS_ERROR);
 
 	unsigned int dpi = 96 * buffer_scale;
-	char buf[10];
+	char buf[32];
 	snprintf(buf, sizeof buf, "dpi=%u", dpi);
 	if (!(font = fcft_from_name(1, (const char *[]) {fontstr}, buf)))
 		DIE("Could not load font");

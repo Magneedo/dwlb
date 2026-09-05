@@ -9,7 +9,7 @@ config.h:
 	cp config.def.h $@
 
 clean:
-	$(RM) $(BINS) $(addsuffix .o,$(BINS))
+	$(RM) $(BINS) *.o
 
 install: all
 	install -D -t $(PREFIX)/bin $(BINS)
@@ -29,15 +29,15 @@ xdg-output-unstable-v1-protocol.c:
 	$(WAYLAND_SCANNER) private-code $(WAYLAND_PROTOCOLS)/unstable/xdg-output/xdg-output-unstable-v1.xml $@
 xdg-output-unstable-v1-protocol.o: xdg-output-unstable-v1-protocol.h
 
-wlr-layer-shell-unstable-v1-protocol.h:
+wlr-layer-shell-unstable-v1-protocol.h: protocols/wlr-layer-shell-unstable-v1.xml
 	$(WAYLAND_SCANNER) client-header protocols/wlr-layer-shell-unstable-v1.xml $@
-wlr-layer-shell-unstable-v1-protocol.c:
+wlr-layer-shell-unstable-v1-protocol.c: protocols/wlr-layer-shell-unstable-v1.xml
 	$(WAYLAND_SCANNER) private-code protocols/wlr-layer-shell-unstable-v1.xml $@
 wlr-layer-shell-unstable-v1-protocol.o: wlr-layer-shell-unstable-v1-protocol.h
 
-dwl-ipc-unstable-v2-protocol.h:
+dwl-ipc-unstable-v2-protocol.h: protocols/dwl-ipc-unstable-v2.xml
 	$(WAYLAND_SCANNER) client-header protocols/dwl-ipc-unstable-v2.xml $@
-dwl-ipc-unstable-v2-protocol.c:
+dwl-ipc-unstable-v2-protocol.c: protocols/dwl-ipc-unstable-v2.xml
 	$(WAYLAND_SCANNER) private-code protocols/dwl-ipc-unstable-v2.xml $@
 dwl-ipc-unstable-v2-protocol.o: dwl-ipc-unstable-v2-protocol.h
 

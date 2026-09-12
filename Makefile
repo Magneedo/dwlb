@@ -9,7 +9,7 @@ config.h:
 	cp config.def.h $@
 
 clean:
-	$(RM) $(BINS) *.o
+	$(RM) $(BINS) *.o *-protocol.c *-protocol.h
 
 install: all
 	install -D -t $(PREFIX)/bin $(BINS)

@@ -1,2 +1,4 @@
 *.o
 dwlb
+*-protocol.c
+*-protocol.h

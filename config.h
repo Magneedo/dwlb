@@ -11,7 +11,7 @@ static bool hidden = false;
 // initially draw all bars at the bottom
 static bool bottom = true;
 // hide vacant tags
-static bool hide_vacant = false;
+static bool hide_vacant = true;
 // vertical pixel padding above and below text
 static uint32_t vertical_padding = 1;
 // allow in-line color commands in status text
@@ -27,11 +27,11 @@ static uint32_t buffer_scale = 1;
 // font
 static char *fontstr = "monospace:size=14";
 // tag names
-static char *tags_names[] = { "1", "2", "3", "4", "5" };
+static char *tags_names[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 static pixman_color_t active_fg_color = HEX_COLOR(0xeeeeeeff);
 static pixman_color_t active_bg_color = HEX_COLOR(0x005577ff);
 static pixman_color_t occupied_fg_color = HEX_COLOR(0xeeeeeeff);
-static pixman_color_t occupied_bg_color = HEX_COLOR(0x005577ff);
+static pixman_color_t occupied_bg_color = HEX_COLOR(0x222222ff);
 static pixman_color_t inactive_fg_color = HEX_COLOR(0xbbbbbbff);
 static pixman_color_t inactive_bg_color = HEX_COLOR(0x222222ff);
 static pixman_color_t urgent_fg_color = HEX_COLOR(0x222222ff);

@@ -408,7 +408,7 @@ draw_frame(Bar *bar)
 		pixman_color_t *fg_color = urgent ? &urgent_fg_color : (active ? &active_fg_color : (occupied ? &occupied_fg_color : &inactive_fg_color));
 		pixman_color_t *bg_color = urgent ? &urgent_bg_color : (active ? &active_bg_color : (occupied ? &occupied_bg_color : &inactive_bg_color));
 		
-		if (!hide_vacant && occupied) {
+		if (occupied) {
 			pixman_image_fill_boxes(PIXMAN_OP_SRC, foreground,
 						fg_color, 1, &(pixman_box32_t){
 							.x1 = x + boxs, .x2 = x + boxs + boxw,

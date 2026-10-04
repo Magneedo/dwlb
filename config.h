@@ -27,7 +27,8 @@ static uint32_t buffer_scale = 1;
 // font
 static char *fontstr = "monospace:size=14";
 // tag names
-static char *tags_names[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+/* tag 10 (Mod+0) is the agent desk: its glyph from ~/.local/share/fonts/agentdesk-glyph.ttf */
+static char *tags_names[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "\U0010FFF0" };
 static pixman_color_t active_fg_color = HEX_COLOR(0xeeeeeeff);
 static pixman_color_t active_bg_color = HEX_COLOR(0x005577ff);
 static pixman_color_t occupied_fg_color = HEX_COLOR(0xeeeeeeff);
